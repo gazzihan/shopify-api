@@ -1,28 +1,9 @@
-from flask import Flask, request, jsonify
-import requests
-import os
 
-app = Flask(__name__)
 
-# Shopify 配置
-SHOPIFY_ACCESS_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
-SHOPIFY_STORE_DOMAIN = os.getenv("SHOPIFY_STORE_DOMAIN")
-
-headers = {
-    "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-    "Content-Type": "application/json"
-}
-
-# 根路由 - 测试部署是否成功
-@app.route("/")
-def index():
-    return "✅ Shopify Flask 控制中心已部署"
-
-# 获取全部商品（分页）
-@app.route("/products", methods=["GET"])
-def get_paginated_products():
-    page = request.args.get("page", 1)
-    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/products.json?limit=50&page={page}"
+# ✅ 获取订单
+@app.route("/orders", methods=["GET"])
+def get_orders():
+    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/orders.json?limit=50&status=any"
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
@@ -30,56 +11,79 @@ def get_paginated_products():
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 500
 
-# 创建一个新商品
-@app.route("/create_product", methods=["POST"])
-def create_product():
-    product_data = request.get_json()
-    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/products.json"
+# ✅ 获取客户列表
+@app.route("/customers", methods=["GET"])
+def get_customers():
+    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/customers.json?limit=50"
     try:
-        response = requests.post(url, headers=headers, json={"product": product_data})
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
         return jsonify(response.json())
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 500
 
-# 删除所有商品
-@app.route("/delete_all_products", methods=["DELETE"])
-def delete_all_products():
-    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/products.json?limit=250"
+# ✅ 创建折扣码（基于 Price Rule）
+@app.route("/discounts/create", methods=["POST"])
+def create_discount():
+    data = request.get_json()
+    price_rule_payload = {
+        "price_rule": {
+            "title": data.get("title", "auto-discount"),
+            "target_type": "line_item",
+            "target_selection": "all",
+            "allocation_method": "across",
+            "value_type": "percentage",
+            "value": f"-{data.get('value', 10)}",
+            "customer_selection": "all",
+            "starts_at": data.get("starts_at", "2025-01-01T00:00:00Z")
+        }
+    }
+
+    try:
+        # 创建 Price Rule
+        rule_resp = requests.post(
+            f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/price_rules.json",
+            headers=headers, json=price_rule_payload)
+        rule_resp.raise_for_status()
+        rule_id = rule_resp.json()["price_rule"]["id"]
+
+        # 创建 Discount Code
+        discount_payload = {
+            "discount_code": {
+                "code": data.get("code", "AUTODISCOUNT")
+            }
+        }
+        discount_resp = requests.post(
+            f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/price_rules/{rule_id}/discount_codes.json",
+            headers=headers, json=discount_payload)
+        discount_resp.raise_for_status()
+
+        return jsonify({
+            "message": "Discount created",
+            "discount": discount_resp.json()
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ✅ 获取库存数量（基于 location）
+@app.route("/inventory_levels", methods=["GET"])
+def get_inventory_levels():
+    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/inventory_levels.json?limit=50"
     try:
         response = requests.get(url, headers=headers)
-        products = response.json().get("products", [])
-        for product in products:
-            product_id = product["id"]
-            del_url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/products/{product_id}.json"
-            requests.delete(del_url, headers=headers)
-        return jsonify({"message": f"已删除 {len(products)} 个商品"})
+        response.raise_for_status()
+        return jsonify(response.json())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 删除指定商品
-@app.route("/delete_product/<product_id>", methods=["DELETE"])
-def delete_product(product_id):
-    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/products/{product_id}.json"
-    try:
-        response = requests.delete(url, headers=headers)
-        if response.status_code == 200:
-            return jsonify({"message": f"已删除商品 {product_id}"})
-        else:
-            return jsonify({"error": response.text}), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# 修改商品标题或描述
-@app.route("/update_product/<product_id>", methods=["PUT"])
-def update_product(product_id):
+# ✅ 修改变体价格
+@app.route("/update_variant/<variant_id>", methods=["PUT"])
+def update_variant(variant_id):
     update_data = request.get_json()
-    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/products/{product_id}.json"
+    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-04/variants/{variant_id}.json"
     try:
-        response = requests.put(url, headers=headers, json={"product": update_data})
+        response = requests.put(url, headers=headers, json={"variant": update_data})
         response.raise_for_status()
         return jsonify(response.json())
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-print("🚀 Shopify Flask 控制中心启动中...")
